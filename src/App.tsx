@@ -1,10 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend, ComposedChart } from 'recharts';
-import { Search, TrendingUp, TrendingDown, Info, DollarSign, Activity, PieChart, AlertCircle, Download, LayoutDashboard, Users, Award, Printer, Target, Trash2 } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, Info, DollarSign, Activity, PieChart, AlertCircle, Download, LayoutDashboard, Users, Award, Printer, Target, Trash2, BarChart2, Eye, Newspaper, Briefcase, Coins, Home } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import CompAnalysis from './CompAnalysis';
 import CompanyGrade from './CompanyGrade';
 import TechAnalysis from './TechAnalysis';
+import EarningsEstimates from './EarningsEstimates';
+import InsiderInstitutional from './InsiderInstitutional';
+import NewsSentiment from './NewsSentiment';
+import PortfolioTracker from './PortfolioTracker';
+import DividendAnalysis from './DividendAnalysis';
 
 const API_KEY = 'ctj1dchr01qgfbsvp4mgctj1dchr01qgfbsvp4n0';
 const BASE_URL = 'https://finnhub.io/api/v1';
@@ -77,7 +82,7 @@ export default function App() {
   const [forecastYears, setForecastYears] = useState(5);
   const [formatUnit, setFormatUnit] = useState<'M' | 'B'>('B');
   const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<'dcf' | 'comp' | 'grade' | 'tech'>('dcf');
+  const [activeTab, setActiveTab] = useState<'dcf' | 'comp' | 'grade' | 'tech' | 'earnings' | 'insider' | 'news' | 'portfolio' | 'dividend'>('dcf');
   const [analystTarget, setAnalystTarget] = useState<{ mean: number; high: number; low: number } | null>(null);
   const [cacheCleared, setCacheCleared] = useState(false);
 
@@ -770,130 +775,192 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-emerald-500/30">
-      {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-8">
-            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setShowLanding(true)}>
-              <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
-                <TrendingUp className="w-5 h-5 text-white" />
-              </div>
-              <span className="text-xl font-bold tracking-tight text-white">ValuWise</span>
+    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-emerald-500/30 flex">
+      {/* Sidebar */}
+      <aside className="w-52 shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col sticky top-0 h-screen overflow-y-auto z-10">
+        {/* Logo */}
+        <div className="px-4 py-4 border-b border-slate-800">
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setShowLanding(true)}>
+            <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center shrink-0">
+              <TrendingUp className="w-5 h-5 text-white" />
             </div>
-            
-            <nav className="hidden md:flex items-center gap-1">
-              <button
-                onClick={() => { setActiveTab('dcf'); setShowLanding(false); }}
-                className={`px-3 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${activeTab === 'dcf' && !showLanding ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
-              >
-                <Activity className="w-4 h-4" />
-                DCF Model
-              </button>
-              <button
-                onClick={() => { setActiveTab('comp'); setShowLanding(false); }}
-                className={`px-3 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${activeTab === 'comp' && !showLanding ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
-              >
-                <Users className="w-4 h-4" />
-                Comp Analysis
-              </button>
-              <button
-                onClick={() => { setActiveTab('grade'); setShowLanding(false); }}
-                className={`px-3 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${activeTab === 'grade' && !showLanding ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
-              >
-                <Award className="w-4 h-4" />
-                Company Grade
-              </button>
-              <button
-                onClick={() => { setActiveTab('tech'); setShowLanding(false); }}
-                className={`px-3 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${activeTab === 'tech' && !showLanding ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
-              >
-                <TrendingUp className="w-4 h-4" />
-                Technical
-              </button>
-            </nav>
+            <span className="text-lg font-bold tracking-tight text-white">ValuWise</span>
           </div>
+        </div>
 
-          {/* Clear Cache button */}
+        {/* Nav */}
+        <nav className="flex-1 px-2 py-3 space-y-0.5">
+          {/* Home */}
           <button
-            onClick={() => {
-              clearAllCache();
-              setCacheCleared(true);
-              setTimeout(() => setCacheCleared(false), 2500);
-            }}
+            onClick={() => setShowLanding(true)}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${showLanding ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+          >
+            <Home className="w-4 h-4 shrink-0" />
+            Home
+          </button>
+
+          <div className="pt-2 pb-1 px-3">
+            <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Valuation</span>
+          </div>
+          {([
+            { id: 'dcf', label: 'DCF Model', Icon: Activity, active: 'text-emerald-400' },
+            { id: 'comp', label: 'Comp Analysis', Icon: Users, active: 'text-blue-400' },
+            { id: 'grade', label: 'Company Grade', Icon: Award, active: 'text-amber-400' },
+          ] as const).map(({ id, label, Icon, active }) => (
+            <button
+              key={id}
+              onClick={() => { setActiveTab(id); setShowLanding(false); }}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${activeTab === id && !showLanding ? `bg-slate-800 ${active}` : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              {label}
+            </button>
+          ))}
+
+          <div className="pt-3 pb-1 px-3">
+            <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Market Data</span>
+          </div>
+          {([
+            { id: 'tech', label: 'Technical', Icon: TrendingUp, active: 'text-violet-400' },
+            { id: 'earnings', label: 'Earnings', Icon: BarChart2, active: 'text-cyan-400' },
+            { id: 'insider', label: 'Insider & Inst.', Icon: Eye, active: 'text-orange-400' },
+            { id: 'news', label: 'News', Icon: Newspaper, active: 'text-sky-400' },
+            { id: 'dividend', label: 'Dividends', Icon: Coins, active: 'text-rose-400' },
+          ] as const).map(({ id, label, Icon, active }) => (
+            <button
+              key={id}
+              onClick={() => { setActiveTab(id); setShowLanding(false); }}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${activeTab === id && !showLanding ? `bg-slate-800 ${active}` : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              {label}
+            </button>
+          ))}
+
+          <div className="pt-3 pb-1 px-3">
+            <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Tools</span>
+          </div>
+          <button
+            onClick={() => { setActiveTab('portfolio'); setShowLanding(false); }}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${activeTab === 'portfolio' && !showLanding ? 'bg-slate-800 text-indigo-400' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+          >
+            <Briefcase className="w-4 h-4 shrink-0" />
+            Portfolio
+          </button>
+        </nav>
+
+        {/* Clear Cache */}
+        <div className="px-2 py-3 border-t border-slate-800">
+          <button
+            onClick={() => { clearAllCache(); setCacheCleared(true); setTimeout(() => setCacheCleared(false), 2500); }}
             title="Clear cached data if search is stuck or showing stale results"
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border transition-all ${
               cacheCleared
                 ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
-                : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600'
+                : 'bg-slate-800/40 border-slate-700/50 text-slate-500 hover:text-slate-200 hover:border-slate-600'
             }`}
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Trash2 className="w-3.5 h-3.5 shrink-0" />
             {cacheCleared ? 'Cache cleared!' : 'Clear Cache'}
           </button>
         </div>
-      </header>
+      </aside>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Main content */}
+      <div className="flex-1 min-w-0">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {showLanding ? (
-          <div className="max-w-3xl mx-auto text-center py-20 space-y-8">
+          <div className="max-w-4xl mx-auto text-center py-16 space-y-8">
             <div className="space-y-4">
-              <h1 className="text-5xl font-bold tracking-tight text-white">
-                Professional <span className="text-emerald-500">Equity Valuation</span> Tool
+              <h1 className="text-4xl font-bold tracking-tight text-white">
+                Professional <span className="text-emerald-500">Equity Research</span> Platform
               </h1>
-              <p className="text-xl text-slate-400">
-                Analyze stocks using Discounted Cash Flow (DCF) models, Comparable Company Analysis, and a financial report card grading system.
+              <p className="text-lg text-slate-400 max-w-2xl mx-auto">
+                A full suite of stock analysis tools — valuation models, market data, insider activity, news sentiment, portfolio tracking, and more.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 text-left">
-              <button
-                onClick={() => { setActiveTab('dcf'); setShowLanding(false); }}
-                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-6 space-y-3 hover:bg-slate-800 hover:border-emerald-500/50 transition-all group text-left"
-              >
-                <div className="w-10 h-10 bg-emerald-500/10 rounded-lg flex items-center justify-center group-hover:bg-emerald-500/20 transition-colors">
-                  <Activity className="w-6 h-6 text-emerald-500" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-left">
+              {/* DCF */}
+              <button onClick={() => { setActiveTab('dcf'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-emerald-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-emerald-500/10 rounded-lg flex items-center justify-center group-hover:bg-emerald-500/20 transition-colors">
+                  <Activity className="w-5 h-5 text-emerald-500" />
                 </div>
-                <h3 className="text-lg font-semibold text-white">DCF Modeling</h3>
-                <p className="text-slate-400 text-sm leading-relaxed">
-                  Project future free cash flows, determine terminal value, and discount back to present value using WACC.
-                </p>
+                <h3 className="text-base font-semibold text-white">DCF Model</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Project free cash flows, terminal value, and WACC to get an intrinsic price per share.</p>
               </button>
-              <button
-                onClick={() => { setActiveTab('comp'); setShowLanding(false); }}
-                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-6 space-y-3 hover:bg-slate-800 hover:border-blue-500/50 transition-all group text-left"
-              >
-                <div className="w-10 h-10 bg-blue-500/10 rounded-lg flex items-center justify-center group-hover:bg-blue-500/20 transition-colors">
-                  <Users className="w-6 h-6 text-blue-500" />
+              {/* Comp */}
+              <button onClick={() => { setActiveTab('comp'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-blue-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-blue-500/10 rounded-lg flex items-center justify-center group-hover:bg-blue-500/20 transition-colors">
+                  <Users className="w-5 h-5 text-blue-500" />
                 </div>
-                <h3 className="text-lg font-semibold text-white">Comp Analysis</h3>
-                <p className="text-slate-400 text-sm leading-relaxed">
-                  Compare valuation multiples like EV/EBITDA and P/E against industry peers to find relative value.
-                </p>
+                <h3 className="text-base font-semibold text-white">Comp Analysis</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Compare EV/EBITDA, P/E and other multiples against manually selected peers.</p>
               </button>
-              <button
-                onClick={() => { setActiveTab('grade'); setShowLanding(false); }}
-                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-6 space-y-3 hover:bg-slate-800 hover:border-emerald-500/50 transition-all group text-left"
-              >
-                <div className="w-10 h-10 bg-emerald-500/10 rounded-lg flex items-center justify-center group-hover:bg-emerald-500/20 transition-colors">
-                  <Award className="w-6 h-6 text-emerald-500" />
+              {/* Grade */}
+              <button onClick={() => { setActiveTab('grade'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-amber-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-amber-500/10 rounded-lg flex items-center justify-center group-hover:bg-amber-500/20 transition-colors">
+                  <Award className="w-5 h-5 text-amber-500" />
                 </div>
-                <h3 className="text-lg font-semibold text-white">Company Grade</h3>
-                <p className="text-slate-400 text-sm leading-relaxed">
-                  Get a letter-grade report card (A–D) across financial health, profitability, growth, and cash flow quality.
-                </p>
+                <h3 className="text-base font-semibold text-white">Company Grade</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Letter-grade report card (A–D) across financial health, profitability, growth, and cash flow.</p>
               </button>
-              <button
-                onClick={() => { setActiveTab('tech'); setShowLanding(false); }}
-                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-6 space-y-3 hover:bg-slate-800 hover:border-violet-500/50 transition-all group text-left"
-              >
-                <div className="w-10 h-10 bg-violet-500/10 rounded-lg flex items-center justify-center group-hover:bg-violet-500/20 transition-colors">
-                  <TrendingUp className="w-6 h-6 text-violet-500" />
+              {/* Technical */}
+              <button onClick={() => { setActiveTab('tech'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-violet-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-violet-500/10 rounded-lg flex items-center justify-center group-hover:bg-violet-500/20 transition-colors">
+                  <TrendingUp className="w-5 h-5 text-violet-500" />
                 </div>
-                <h3 className="text-lg font-semibold text-white">Technical Analysis</h3>
-                <p className="text-slate-400 text-sm leading-relaxed">
-                  View RSI, MACD, Bollinger Bands, and moving averages on 1-year daily price charts with a bullish/bearish signal score.
-                </p>
+                <h3 className="text-base font-semibold text-white">Technical Analysis</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">RSI, MACD, Bollinger Bands, moving averages, and a bullish/bearish signal score.</p>
+              </button>
+              {/* Earnings */}
+              <button onClick={() => { setActiveTab('earnings'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-cyan-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-cyan-500/10 rounded-lg flex items-center justify-center group-hover:bg-cyan-500/20 transition-colors">
+                  <BarChart2 className="w-5 h-5 text-cyan-500" />
+                </div>
+                <h3 className="text-base font-semibold text-white">Earnings Estimates</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Consensus EPS and revenue estimates for next 4 quarters + FY with surprise history.</p>
+              </button>
+              {/* Insider */}
+              <button onClick={() => { setActiveTab('insider'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-orange-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-orange-500/10 rounded-lg flex items-center justify-center group-hover:bg-orange-500/20 transition-colors">
+                  <Eye className="w-5 h-5 text-orange-500" />
+                </div>
+                <h3 className="text-base font-semibold text-white">Insider &amp; Institutional</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Recent insider buy/sell transactions and top institutional ownership holders.</p>
+              </button>
+              {/* News */}
+              <button onClick={() => { setActiveTab('news'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-sky-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-sky-500/10 rounded-lg flex items-center justify-center group-hover:bg-sky-500/20 transition-colors">
+                  <Newspaper className="w-5 h-5 text-sky-500" />
+                </div>
+                <h3 className="text-base font-semibold text-white">News &amp; Sentiment</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Latest headlines with AI-powered bullish/bearish sentiment scores and buzz index.</p>
+              </button>
+              {/* Portfolio */}
+              <button onClick={() => { setActiveTab('portfolio'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-indigo-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-indigo-500/10 rounded-lg flex items-center justify-center group-hover:bg-indigo-500/20 transition-colors">
+                  <Briefcase className="w-5 h-5 text-indigo-500" />
+                </div>
+                <h3 className="text-base font-semibold text-white">Portfolio Tracker</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Track multiple holdings with live prices, weights, P&amp;L, and diversification grade.</p>
+              </button>
+              {/* Dividend */}
+              <button onClick={() => { setActiveTab('dividend'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 space-y-2.5 hover:bg-slate-800 hover:border-rose-500/50 transition-all group text-left">
+                <div className="w-9 h-9 bg-rose-500/10 rounded-lg flex items-center justify-center group-hover:bg-rose-500/20 transition-colors">
+                  <Coins className="w-5 h-5 text-rose-500" />
+                </div>
+                <h3 className="text-base font-semibold text-white">Dividend Analysis</h3>
+                <p className="text-slate-400 text-xs leading-relaxed">Dividend history, 3/5/10yr growth CAGR, yield, and FCF safety score.</p>
               </button>
             </div>
 
@@ -902,9 +969,9 @@ export default function App() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
               </svg>
               <div>
-                <p className="text-sm font-medium text-amber-400 mb-0.5">US-Listed Stocks Only</p>
+                <p className="text-sm font-medium text-amber-400 mb-0.5">US-Listed Stocks Only (DCF, Comp, Grade)</p>
                 <p className="text-sm text-slate-400 leading-relaxed">
-                  This tool supports US-listed stocks that file with the SEC (NYSE / NASDAQ). ADRs and foreign-listed companies such as NVO or TSM are not supported.
+                  Valuation tools require SEC filings (NYSE / NASDAQ). Market data tabs (Technical, Earnings, News, Dividends) work with any Finnhub-supported ticker.
                 </p>
               </div>
             </div>
@@ -915,6 +982,16 @@ export default function App() {
           <CompanyGrade />
         ) : activeTab === 'tech' ? (
           <TechAnalysis />
+        ) : activeTab === 'earnings' ? (
+          <EarningsEstimates />
+        ) : activeTab === 'insider' ? (
+          <InsiderInstitutional />
+        ) : activeTab === 'news' ? (
+          <NewsSentiment />
+        ) : activeTab === 'portfolio' ? (
+          <PortfolioTracker />
+        ) : activeTab === 'dividend' ? (
+          <DividendAnalysis />
         ) : (
           <>
             {(!data || error) && !loading && (
@@ -1767,6 +1844,7 @@ export default function App() {
           </>
         )}
       </main>
+      </div>
     </div>
   );
 }

@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run build)"
+      "Bash(npm run build)",
+      "WebFetch(domain:api.tiingo.com)",
+      "WebFetch(domain:api-ninjas.com)",
+      "WebFetch(domain:www.tiingo.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
