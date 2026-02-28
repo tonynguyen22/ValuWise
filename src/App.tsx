@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend, ComposedChart } from 'recharts';
-import { Search, TrendingUp, TrendingDown, Info, DollarSign, Activity, PieChart, AlertCircle, Download, LayoutDashboard, Users, Award, Printer, Target } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, Info, DollarSign, Activity, PieChart, AlertCircle, Download, LayoutDashboard, Users, Award, Printer, Target, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import CompAnalysis from './CompAnalysis';
 import CompanyGrade from './CompanyGrade';
+import TechAnalysis from './TechAnalysis';
 
 const API_KEY = 'ctj1dchr01qgfbsvp4mgctj1dchr01qgfbsvp4n0';
 const BASE_URL = 'https://finnhub.io/api/v1';
@@ -20,72 +21,17 @@ function safeSetItem(key: string, value: string) {
   } catch (e) {
     if (e instanceof DOMException && e.name === 'QuotaExceededError') {
       Object.keys(localStorage)
-        .filter(k => k.startsWith('finnhub_') || k.startsWith('valuwise_'))
+        .filter(k => k.startsWith('finnhub_') || k.startsWith('valuwise_') || k.startsWith('tech_'))
         .forEach(k => localStorage.removeItem(k));
       try { localStorage.setItem(key, value); } catch { /* skip if still full */ }
     }
   }
 }
 
-function buildSyntheticFinancials(metrics: any, profile: any): any[] {
-  const sharesOut = (parseFloat(profile.shareOutstanding) || 0) * 1e6;
-  if (!sharesOut || !metrics.revenuePerShareTTM) return [];
-
-  const rev = metrics.revenuePerShareTTM * sharesOut;
-  const ebitdaMargin = metrics.ebitdaMarginTTM ?? 0;
-  const netMargin = metrics.netMarginTTM ?? 0;
-  const grossMargin = metrics.grossMarginTTM ?? 0;
-  const operatingMargin = metrics.operatingMarginTTM ?? (ebitdaMargin * 0.85);
-  const ebit = rev * operatingMargin;
-  const da = Math.max(0, rev * ebitdaMargin - ebit);
-  const netIncome = rev * netMargin;
-  const gp = rev * grossMargin;
-  const tax = Math.max(0, ebit - netIncome);
-  const eps = sharesOut > 0 ? netIncome / sharesOut : (metrics.epsTTM ?? 0);
-
-  const fcfMargin = metrics.freeCashFlowMarginAnnual ?? 0;
-  const fcf = fcfMargin > 0 ? rev * fcfMargin : (metrics.freeCashFlowAnnual ?? 0) * 1e6;
-  const cfo = netIncome + da;
-  const capex = Math.max(0, cfo - fcf);
-
-  const marketCap = (parseFloat(profile.marketCapitalization) || metrics.marketCapitalization || 0) * 1e6;
-  const pb = (metrics.pbAnnual ?? 0) > 0 ? metrics.pbAnnual : 1;
-  const totalEquity = marketCap / pb;
-  const deRatio = metrics.debtToEquityAnnual ?? metrics['totalDebt/totalEquityAnnual'] ?? 0;
-  const totalDebt = totalEquity * deRatio;
-  const cash = (metrics.cashPerSharePerShareAnnual ?? 0) * sharesOut;
-
-  const interestCoverage = metrics.netInterestCoverageAnnual ?? 0;
-  const interestExpense = (interestCoverage > 0 && ebit > 0) ? Math.abs(ebit / interestCoverage) : 0;
-  const yearStr = `${new Date().getFullYear()}-12`;
-
-  return [{
-    endDate: yearStr,
-    year: new Date().getFullYear(),
-    report: {
-      ic: [
-        { concept: 'us-gaap_Revenues', value: rev },
-        { concept: 'us-gaap_GrossProfit', value: gp },
-        { concept: 'us-gaap_OperatingIncomeLoss', value: ebit },
-        { concept: 'us-gaap_NetIncomeLoss', value: netIncome },
-        { concept: 'us-gaap_IncomeTaxExpenseBenefit', value: tax },
-        { concept: 'us-gaap_EarningsPerShareBasic', value: eps },
-        { concept: 'us-gaap_WeightedAverageNumberOfSharesOutstandingBasic', value: sharesOut },
-        { concept: 'us-gaap_InterestExpense', value: interestExpense },
-      ],
-      bs: [
-        { concept: 'us-gaap_StockholdersEquity', value: totalEquity },
-        { concept: 'us-gaap_LongTermDebtNoncurrent', value: totalDebt },
-        { concept: 'us-gaap_CashAndCashEquivalentsAtCarryingValue', value: cash },
-        { concept: 'us-gaap_CommonStockSharesOutstanding', value: sharesOut },
-      ],
-      cf: [
-        { concept: 'us-gaap_DepreciationDepletionAndAmortization', value: da },
-        { concept: 'us-gaap_NetCashProvidedByUsedInOperatingActivities', value: cfo },
-        { concept: 'us-gaap_PaymentsToAcquirePropertyPlantAndEquipment', value: capex },
-      ],
-    },
-  }];
+function clearAllCache() {
+  Object.keys(localStorage)
+    .filter(k => k.startsWith('finnhub_') || k.startsWith('valuwise_') || k.startsWith('tech_'))
+    .forEach(k => localStorage.removeItem(k));
 }
 
 const formatCurrency = (val: number) => {
@@ -131,8 +77,9 @@ export default function App() {
   const [forecastYears, setForecastYears] = useState(5);
   const [formatUnit, setFormatUnit] = useState<'M' | 'B'>('B');
   const [hiddenSeries, setHiddenSeries] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<'dcf' | 'comp' | 'grade'>('dcf');
+  const [activeTab, setActiveTab] = useState<'dcf' | 'comp' | 'grade' | 'tech'>('dcf');
   const [analystTarget, setAnalystTarget] = useState<{ mean: number; high: number; low: number } | null>(null);
+  const [cacheCleared, setCacheCleared] = useState(false);
 
   const handleLegendClick = (e: any, chartKeys: string[]) => {
     setHiddenSeries(prev => {
@@ -158,15 +105,17 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      const cacheKey = `finnhub_${symbol}_financials`;
+      const cacheKey = `finnhub_${symbol}_financials_v2`;
       const cached = localStorage.getItem(cacheKey);
       let fetchedData;
 
       if (cached) {
-        const { timestamp, data } = JSON.parse(cached);
-        if (Date.now() - timestamp < 24 * 60 * 60 * 1000) {
-          fetchedData = data;
-        }
+        try {
+          const { timestamp, data } = JSON.parse(cached);
+          if (Date.now() - timestamp < 24 * 60 * 60 * 1000) {
+            fetchedData = data;
+          }
+        } catch { localStorage.removeItem(cacheKey); }
       }
 
       if (!fetchedData) {
@@ -183,23 +132,16 @@ export default function App() {
           throw new Error(finData.error || profData.error || metricData.error);
         }
 
-        let financials = (finData.data || []).slice(0, 6);
-        let isMetricBased = false;
-
-        if (financials.length === 0 && metricData.metric && profData.shareOutstanding) {
-          financials = buildSyntheticFinancials(metricData.metric, profData);
-          isMetricBased = true;
-        }
+        const financials = (finData.data || []).slice(0, 6);
 
         if (financials.length === 0) {
-          throw new Error('No financial data found for this ticker.');
+          throw new Error('No financial data found. Only US-listed stocks with SEC filings (NYSE / NASDAQ) are supported.');
         }
 
         fetchedData = {
           financials,
           profile: profData,
           metrics: metricData.metric,
-          isMetricBased,
         };
 
         safeSetItem(cacheKey, JSON.stringify({
@@ -298,8 +240,29 @@ export default function App() {
       const prevRev = index < arr.length - 1 ? getRev(arr[index + 1]) : rev;
       const revGrowth = prevRev ? (rev - prevRev) / prevRev : 0;
 
-      const gp = findConcept(ic, ['us-gaap_GrossProfit', 'ifrs-full_GrossProfit']);
-      const ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+      let gp = findConcept(ic, ['us-gaap_GrossProfit', 'ifrs-full_GrossProfit']);
+      if (!gp && rev > 0) {
+        const cogs = findConcept(ic, ['us-gaap_CostOfRevenue', 'us-gaap_CostOfGoodsAndServicesSold', 'us-gaap_CostOfGoodsSold', 'us-gaap_CostOfServices', 'ifrs-full_CostOfSales']);
+        if (cogs > 0) gp = rev - cogs;
+      }
+      let ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+      if (!ebit) {
+        // Fallback: derive EBIT from pretax income + net interest expense
+        const ebt = findConcept(ic, [
+          'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest',
+          'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments',
+          'ifrs-full_ProfitLossBeforeTax',
+        ]);
+        const intExp = Math.abs(findConcept(ic, ['us-gaap_InterestExpense', 'us-gaap_InterestAndDebtExpense', 'ifrs-full_FinanceCosts']));
+        const intInc = Math.abs(findConcept(ic, ['us-gaap_InvestmentIncomeInterest', 'us-gaap_InterestAndDividendIncomeOperating', 'ifrs-full_FinanceIncome']));
+        if (ebt) ebit = ebt + intExp - intInc;
+      }
+      // Fallback 2: Gross Profit − SG&A − R&D (uses already-computed gp)
+      if (!ebit && gp > 0) {
+        const sga = Math.abs(findConcept(ic, ['us-gaap_SellingGeneralAndAdministrativeExpense', 'us-gaap_SellingGeneralAndAdministrativeExpenses', 'us-gaap_GeneralAndAdministrativeExpense', 'ifrs-full_SellingGeneralAndAdministrativeExpense']));
+        const rd  = Math.abs(findConcept(ic, ['us-gaap_ResearchAndDevelopmentExpense', 'us-gaap_ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost']));
+        if (sga > 0) ebit = gp - sga - rd;
+      }
       const tax = findConcept(ic, ['us-gaap_IncomeTaxExpenseBenefit', 'ifrs-full_IncomeTaxExpenseContinuingOperations', 'ifrs-full_IncomeTaxExpense']);
       const netIncome = findConcept(ic, ['us-gaap_NetIncomeLoss', 'ifrs-full_ProfitLoss']);
       const da = findConcept(cf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
@@ -378,7 +341,23 @@ export default function App() {
     const cf = latestReport.cf;
 
     const baseRev = findConcept(ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']);
-    const baseEbit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+    let baseEbit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+    if (!baseEbit) {
+      const baseEbt = findConcept(ic, [
+        'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest',
+        'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments',
+        'ifrs-full_ProfitLossBeforeTax',
+      ]);
+      const baseIntExp = Math.abs(findConcept(ic, ['us-gaap_InterestExpense', 'us-gaap_InterestAndDebtExpense', 'ifrs-full_FinanceCosts']));
+      const baseIntInc = Math.abs(findConcept(ic, ['us-gaap_InvestmentIncomeInterest', 'us-gaap_InterestAndDividendIncomeOperating', 'ifrs-full_FinanceIncome']));
+      if (baseEbt) baseEbit = baseEbt + baseIntExp - baseIntInc;
+    }
+    if (!baseEbit && baseRev > 0) {
+      const baseGp = findConcept(ic, ['us-gaap_GrossProfit', 'ifrs-full_GrossProfit']);
+      const baseSga = Math.abs(findConcept(ic, ['us-gaap_SellingGeneralAndAdministrativeExpense', 'us-gaap_SellingGeneralAndAdministrativeExpenses', 'us-gaap_GeneralAndAdministrativeExpense']));
+      const baseRd  = Math.abs(findConcept(ic, ['us-gaap_ResearchAndDevelopmentExpense']));
+      if (baseGp > 0 && baseSga > 0) baseEbit = baseGp - baseSga - baseRd;
+    }
     const ebitMargin = baseRev !== 0 ? baseEbit / baseRev : 0;
 
     const baseDna = findConcept(cf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
@@ -825,8 +804,33 @@ export default function App() {
                 <Award className="w-4 h-4" />
                 Company Grade
               </button>
+              <button
+                onClick={() => { setActiveTab('tech'); setShowLanding(false); }}
+                className={`px-3 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${activeTab === 'tech' && !showLanding ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
+              >
+                <TrendingUp className="w-4 h-4" />
+                Technical
+              </button>
             </nav>
           </div>
+
+          {/* Clear Cache button */}
+          <button
+            onClick={() => {
+              clearAllCache();
+              setCacheCleared(true);
+              setTimeout(() => setCacheCleared(false), 2500);
+            }}
+            title="Clear cached data if search is stuck or showing stale results"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+              cacheCleared
+                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
+                : 'bg-slate-800/60 border-slate-700/60 text-slate-400 hover:text-slate-200 hover:border-slate-600'
+            }`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            {cacheCleared ? 'Cache cleared!' : 'Clear Cache'}
+          </button>
         </div>
       </header>
 
@@ -842,8 +846,8 @@ export default function App() {
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
-              <button 
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 text-left">
+              <button
                 onClick={() => { setActiveTab('dcf'); setShowLanding(false); }}
                 className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-6 space-y-3 hover:bg-slate-800 hover:border-emerald-500/50 transition-all group text-left"
               >
@@ -879,6 +883,18 @@ export default function App() {
                   Get a letter-grade report card (A–D) across financial health, profitability, growth, and cash flow quality.
                 </p>
               </button>
+              <button
+                onClick={() => { setActiveTab('tech'); setShowLanding(false); }}
+                className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-6 space-y-3 hover:bg-slate-800 hover:border-violet-500/50 transition-all group text-left"
+              >
+                <div className="w-10 h-10 bg-violet-500/10 rounded-lg flex items-center justify-center group-hover:bg-violet-500/20 transition-colors">
+                  <TrendingUp className="w-6 h-6 text-violet-500" />
+                </div>
+                <h3 className="text-lg font-semibold text-white">Technical Analysis</h3>
+                <p className="text-slate-400 text-sm leading-relaxed">
+                  View RSI, MACD, Bollinger Bands, and moving averages on 1-year daily price charts with a bullish/bearish signal score.
+                </p>
+              </button>
             </div>
 
             <div className="flex items-start gap-3 bg-amber-500/5 border border-amber-500/20 rounded-xl px-5 py-4 text-left max-w-2xl mx-auto">
@@ -886,9 +902,9 @@ export default function App() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
               </svg>
               <div>
-                <p className="text-sm font-medium text-amber-400 mb-0.5">ADR & Non-US Stock Support</p>
+                <p className="text-sm font-medium text-amber-400 mb-0.5">US-Listed Stocks Only</p>
                 <p className="text-sm text-slate-400 leading-relaxed">
-                  US-listed stocks (NYSE, NASDAQ) use full reported XBRL financials. ADRs and foreign-listed companies such as <span className="text-slate-300">NVO</span> (Novo Nordisk) and <span className="text-slate-300">TSM</span> (TSMC) are supported via Finnhub's aggregated TTM metrics — one data point is shown and all assumptions can be adjusted with the sliders.
+                  This tool supports US-listed stocks that file with the SEC (NYSE / NASDAQ). ADRs and foreign-listed companies such as NVO or TSM are not supported.
                 </p>
               </div>
             </div>
@@ -897,6 +913,8 @@ export default function App() {
           <CompAnalysis />
         ) : activeTab === 'grade' ? (
           <CompanyGrade />
+        ) : activeTab === 'tech' ? (
+          <TechAnalysis />
         ) : (
           <>
             {(!data || error) && !loading && (
@@ -955,23 +973,11 @@ export default function App() {
             <div>
               <h3 className="text-red-500 font-medium">Error loading data</h3>
               <p className="text-red-400/80 text-sm mt-1">{error}</p>
+              <p className="text-slate-500 text-xs mt-2">If this keeps happening, click <span className="text-slate-300 font-medium">Clear Cache</span> in the top-right corner and try again.</p>
             </div>
           </div>
         ) : dcf && data ? (
           <div className="space-y-6">
-            {data?.isMetricBased && (
-              <div className="flex items-start gap-3 bg-amber-500/5 border border-amber-500/20 rounded-xl px-5 py-4">
-                <svg className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-                </svg>
-                <div>
-                  <p className="text-sm font-medium text-amber-400 mb-0.5">ADR / Non-US Stock — Estimated Data</p>
-                  <p className="text-sm text-slate-400 leading-relaxed">
-                    This ticker does not file with the SEC. The model is seeded using Finnhub's aggregated TTM metrics (revenue per share, margins, FCF) rather than reported XBRL financials. Historical trend charts show one data point. Use the sliders to adjust all assumptions.
-                  </p>
-                </div>
-              </div>
-            )}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               
               {/* Left Column: Controls & Assumptions */}

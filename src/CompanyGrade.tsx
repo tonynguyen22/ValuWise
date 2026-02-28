@@ -18,70 +18,6 @@ function safeSetItem(key: string, value: string) {
   }
 }
 
-function buildSyntheticFinancialsForGrade(metrics: any, profile: any): any[] {
-  const sharesOut = (parseFloat(profile.shareOutstanding) || 0) * 1e6;
-  if (!sharesOut || !metrics.revenuePerShareTTM) return [];
-
-  const rev = metrics.revenuePerShareTTM * sharesOut;
-  const ebitdaMargin = metrics.ebitdaMarginTTM ?? 0;
-  const netMargin = metrics.netMarginTTM ?? 0;
-  const grossMargin = metrics.grossMarginTTM ?? 0;
-  const operatingMargin = metrics.operatingMarginTTM ?? (ebitdaMargin * 0.85);
-  const ebit = rev * operatingMargin;
-  const da = Math.max(0, rev * ebitdaMargin - ebit);
-  const netIncome = rev * netMargin;
-  const gp = rev * grossMargin;
-  const eps = sharesOut > 0 ? netIncome / sharesOut : (metrics.epsTTM ?? 0);
-
-  const fcfMargin = metrics.freeCashFlowMarginAnnual ?? 0;
-  const fcf = fcfMargin > 0 ? rev * fcfMargin : (metrics.freeCashFlowAnnual ?? 0) * 1e6;
-  const cfo = netIncome + da;
-  const capex = Math.max(0, cfo - fcf);
-
-  const marketCap = (parseFloat(profile.marketCapitalization) || metrics.marketCapitalization || 0) * 1e6;
-  const pb = (metrics.pbAnnual ?? 0) > 0 ? metrics.pbAnnual : 1;
-  const totalEquity = marketCap / pb;
-  const deRatio = metrics.debtToEquityAnnual ?? metrics['totalDebt/totalEquityAnnual'] ?? 0;
-  const totalDebt = totalEquity * deRatio;
-  const currentRatio = metrics.currentRatioAnnual ?? 0;
-  const currentLiabilities = currentRatio > 0 ? (totalDebt * 0.3) : 0;
-  const currentAssets = currentRatio > 0 ? currentLiabilities * currentRatio : 0;
-  const interestCoverage = metrics.netInterestCoverageAnnual ?? 0;
-  const interestExpense = (interestCoverage > 0 && ebit > 0) ? Math.abs(ebit / interestCoverage) : 0;
-  const totalAssets = totalEquity + totalDebt;
-  const yearStr = `${new Date().getFullYear()}-12`;
-
-  return [{
-    endDate: yearStr,
-    year: new Date().getFullYear(),
-    report: {
-      ic: [
-        { concept: 'us-gaap_Revenues', value: rev },
-        { concept: 'us-gaap_GrossProfit', value: gp },
-        { concept: 'us-gaap_OperatingIncomeLoss', value: ebit },
-        { concept: 'us-gaap_NetIncomeLoss', value: netIncome },
-        { concept: 'us-gaap_IncomeTaxExpenseBenefit', value: Math.max(0, ebit - netIncome) },
-        { concept: 'us-gaap_EarningsPerShareBasic', value: eps },
-        { concept: 'us-gaap_WeightedAverageNumberOfSharesOutstandingBasic', value: sharesOut },
-        { concept: 'us-gaap_InterestExpense', value: interestExpense },
-      ],
-      bs: [
-        { concept: 'us-gaap_Assets', value: totalAssets },
-        { concept: 'us-gaap_StockholdersEquity', value: totalEquity },
-        { concept: 'us-gaap_LongTermDebtNoncurrent', value: totalDebt },
-        { concept: 'us-gaap_AssetsCurrent', value: currentAssets },
-        { concept: 'us-gaap_LiabilitiesCurrent', value: currentLiabilities },
-        { concept: 'us-gaap_CommonStockSharesOutstanding', value: sharesOut },
-      ],
-      cf: [
-        { concept: 'us-gaap_DepreciationDepletionAndAmortization', value: da },
-        { concept: 'us-gaap_NetCashProvidedByUsedInOperatingActivities', value: cfo },
-        { concept: 'us-gaap_PaymentsToAcquirePropertyPlantAndEquipment', value: capex },
-      ],
-    },
-  }];
-}
-
 // ─── Data helpers (mirrored from App.tsx) ────────────────────────────────────
 
 const parseNum = (val: any): number => {
@@ -122,8 +58,28 @@ function buildHistoricalSummary(financials: any[]) {
     const prevRev = index < arr.length - 1 ? getRev(arr[index + 1]) : rev;
     const revGrowth = prevRev ? (rev - prevRev) / prevRev : 0;
 
-    const gp   = findConcept(ic, ['us-gaap_GrossProfit', 'ifrs-full_GrossProfit']);
-    const ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+    let gp = findConcept(ic, ['us-gaap_GrossProfit', 'ifrs-full_GrossProfit']);
+    if (!gp && rev > 0) {
+      const cogs = findConcept(ic, ['us-gaap_CostOfRevenue', 'us-gaap_CostOfGoodsAndServicesSold', 'us-gaap_CostOfGoodsSold', 'us-gaap_CostOfServices', 'ifrs-full_CostOfSales']);
+      if (cogs > 0) gp = rev - cogs;
+    }
+    let ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+    if (!ebit) {
+      const ebt = findConcept(ic, [
+        'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest',
+        'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments',
+        'ifrs-full_ProfitLossBeforeTax',
+      ]);
+      const intExp = Math.abs(findConcept(ic, ['us-gaap_InterestExpense', 'us-gaap_InterestAndDebtExpense', 'ifrs-full_FinanceCosts']));
+      const intInc = Math.abs(findConcept(ic, ['us-gaap_InvestmentIncomeInterest', 'us-gaap_InterestAndDividendIncomeOperating', 'ifrs-full_FinanceIncome']));
+      if (ebt) ebit = ebt + intExp - intInc;
+    }
+    // Fallback 2: Gross Profit − SG&A − R&D (uses already-computed gp)
+    if (!ebit && gp > 0) {
+      const sga = Math.abs(findConcept(ic, ['us-gaap_SellingGeneralAndAdministrativeExpense', 'us-gaap_SellingGeneralAndAdministrativeExpenses', 'us-gaap_GeneralAndAdministrativeExpense', 'ifrs-full_SellingGeneralAndAdministrativeExpense']));
+      const rd  = Math.abs(findConcept(ic, ['us-gaap_ResearchAndDevelopmentExpense', 'us-gaap_ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost']));
+      if (sga > 0) ebit = gp - sga - rd;
+    }
     const tax  = findConcept(ic, ['us-gaap_IncomeTaxExpenseBenefit', 'ifrs-full_IncomeTaxExpenseContinuingOperations', 'ifrs-full_IncomeTaxExpense']);
     const netIncome = findConcept(ic, ['us-gaap_NetIncomeLoss', 'ifrs-full_ProfitLoss']);
     const da   = findConcept(cf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
@@ -516,16 +472,13 @@ export default function CompanyGrade() {
   const [error, setError] = useState('');
   const [rawResult, setRawResult] = useState<ReturnType<typeof computeGrades> | null>(null);
   const [historicalSummary, setHistoricalSummary] = useState<any[]>([]);
-  const [isMetricBased, setIsMetricBased] = useState(false);
-
   const fetchAndGrade = async (sym: string) => {
     setLoading(true);
     setError('');
     setRawResult(null);
     setCompanyName('');
-    setIsMetricBased(false);
 
-    const cacheKey = `valuwise_grade_${sym}`;
+    const cacheKey = `valuwise_grade_v2_${sym}`;
     const cached = localStorage.getItem(cacheKey);
     if (cached) {
       try {
@@ -539,28 +492,21 @@ export default function CompanyGrade() {
     }
 
     try {
-      const [finRes, profRes, metricRes] = await Promise.all([
+      const [finRes, profRes] = await Promise.all([
         fetch(`${BASE_URL}/stock/financials-reported?symbol=${sym}&freq=annual&token=${API_KEY}`),
         fetch(`${BASE_URL}/stock/profile2?symbol=${sym}&token=${API_KEY}`),
-        fetch(`${BASE_URL}/stock/metric?symbol=${sym}&metric=all&token=${API_KEY}`),
       ]);
-      const [finJson, profJson, metricJson] = await Promise.all([finRes.json(), profRes.json(), metricRes.json()]);
+      const [finJson, profJson] = await Promise.all([finRes.json(), profRes.json()]);
 
-      let financials = (finJson.data ?? []).slice(0, 6);
-      let isMetricBased = false;
+      const financials = (finJson.data ?? []).slice(0, 6);
 
       if (financials.length === 0) {
-        if (metricJson.metric && profJson.shareOutstanding) {
-          financials = buildSyntheticFinancialsForGrade(metricJson.metric, profJson);
-          isMetricBased = true;
-        } else {
-          setError('No financial data found. Check the ticker and try again.');
-          setLoading(false);
-          return;
-        }
+        setError('No financial data found. Only US-listed stocks with SEC filings (NYSE / NASDAQ) are supported.');
+        setLoading(false);
+        return;
       }
 
-      const payload = { financials, profile: profJson, isMetricBased };
+      const payload = { financials, profile: profJson };
       safeSetItem(cacheKey, JSON.stringify({ payload, ts: Date.now() }));
       processPayload(payload);
     } catch {
@@ -576,7 +522,6 @@ export default function CompanyGrade() {
     setRawResult(result);
     setHistoricalSummary(hs);
     setCompanyName(payload.profile?.name ?? '');
-    setIsMetricBased(payload.isMetricBased ?? false);
   };
 
   const handleSearch = (e: React.FormEvent) => {
@@ -621,7 +566,7 @@ export default function CompanyGrade() {
     const run = async () => {
       setPeerGradesLoading(true);
       // 1. Fetch or read cached peer list
-      const cacheKeyPeers = `valuwise_peers_${ticker}`;
+      const cacheKeyPeers = `valuwise_peers_v2_${ticker}`;
       let peers: string[] = [];
       const cachedPeers = localStorage.getItem(cacheKeyPeers);
       if (cachedPeers) {
@@ -640,7 +585,7 @@ export default function CompanyGrade() {
       }
       // 2. Grade each peer
       const results = await Promise.allSettled(peers.map(async (peerTicker: string) => {
-        const cacheKey = `valuwise_grade_${peerTicker}`;
+        const cacheKey = `valuwise_grade_v2_${peerTicker}`;
         let payload: any = null;
         const cp = localStorage.getItem(cacheKey);
         if (cp) {
@@ -650,20 +595,13 @@ export default function CompanyGrade() {
           } catch { /* ignore */ }
         }
         if (!payload) {
-          const [finRes, profRes, metricRes] = await Promise.all([
+          const [finRes, profRes] = await Promise.all([
             fetch(`${BASE_URL}/stock/financials-reported?symbol=${peerTicker}&freq=annual&token=${API_KEY}`),
             fetch(`${BASE_URL}/stock/profile2?symbol=${peerTicker}&token=${API_KEY}`),
-            fetch(`${BASE_URL}/stock/metric?symbol=${peerTicker}&metric=all&token=${API_KEY}`),
           ]);
-          const [finJson, profJson, metricJson] = await Promise.all([finRes.json(), profRes.json(), metricRes.json()]);
-          let financials = (finJson.data ?? []).slice(0, 6);
-          if (financials.length === 0) {
-            if (metricJson.metric && profJson.shareOutstanding) {
-              financials = buildSyntheticFinancialsForGrade(metricJson.metric, profJson);
-            } else {
-              throw new Error('No data');
-            }
-          }
+          const [finJson, profJson] = await Promise.all([finRes.json(), profRes.json()]);
+          const financials = (finJson.data ?? []).slice(0, 6);
+          if (financials.length === 0) throw new Error('No data');
           payload = { financials, profile: profJson };
           safeSetItem(cacheKey, JSON.stringify({ payload, ts: Date.now() }));
         }
@@ -754,6 +692,7 @@ export default function CompanyGrade() {
           <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
           <div>
             <p className="text-red-400 text-sm">{error}</p>
+            <p className="text-slate-500 text-xs mt-2">If this keeps happening, click <span className="text-slate-300 font-medium">Clear Cache</span> in the top-right corner and try again.</p>
           </div>
         </div>
       )}
@@ -792,21 +731,6 @@ export default function CompanyGrade() {
               <Award className="w-7 h-7 text-slate-500" />
             </div>
             <p className="text-slate-500 text-sm">Enter a ticker above to generate the report card.</p>
-          </div>
-        </div>
-      )}
-
-      {/* ADR / metric-based warning */}
-      {!loading && gradeData && isMetricBased && (
-        <div className="flex items-start gap-3 bg-amber-500/5 border border-amber-500/20 rounded-xl px-5 py-4">
-          <svg className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-amber-400 mb-0.5">ADR / Non-US Stock — TTM Metrics Only</p>
-            <p className="text-sm text-slate-400 leading-relaxed">
-              This ticker does not file with the SEC. Grades are based on Finnhub's aggregated TTM metrics rather than reported multi-year financials. Trend analysis is limited to one data point.
-            </p>
           </div>
         </div>
       )}

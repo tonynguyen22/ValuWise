@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Search, AlertCircle, Download, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Search, AlertCircle, Download, ArrowUpDown, ArrowUp, ArrowDown, Users, Plus, X } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, BarChart, Bar, ScatterChart, Scatter, XAxis, YAxis, ZAxis, Tooltip, CartesianGrid, Cell, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Legend } from 'recharts';
 import * as XLSX from 'xlsx';
 
@@ -30,18 +30,25 @@ const formatCurrency = (val: number) => {
 const formatPct = (val: number) => `${(val * 100).toFixed(2)}%`;
 const fmtX = (val: number | null | undefined) => (val != null && isFinite(val) && val > 0) ? `${val.toFixed(2)}x` : '—';
 
+interface PeerSuggestion { symbol: string; name: string; isUS: boolean; }
+
 export default function CompAnalysis() {
   const [tickerInput, setTickerInput] = useState('');
   const [ticker, setTicker] = useState('');
-  const [customPeersInput, setCustomPeersInput] = useState('');
-  const [customPeers, setCustomPeers] = useState<string[]>([]);
-  const [numPeers, setNumPeers] = useState(3);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [data, setData] = useState<any[]>([]);
+  // Peer finder
+  const [showPeerFinder, setShowPeerFinder]       = useState(false);
+  const [peerFinderLoading, setPeerFinderLoading] = useState(false);
+  const [peerSuggestions, setPeerSuggestions]     = useState<PeerSuggestion[]>([]);
+  // User-selected peers (max 5)
+  const [selectedPeerSymbols, setSelectedPeerSymbols] = useState<string[]>([]);
+  const [customPeerInput, setCustomPeerInput]         = useState('');
+  // Analysis results
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+  const [data, setData]         = useState<any[]>([]);
   const [selectedPeers, setSelectedPeers] = useState<Record<string, boolean>>({});
-  const [sortKey, setSortKey] = useState<string | null>(null);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [sortKey, setSortKey]   = useState<string | null>(null);
+  const [sortDir, setSortDir]   = useState<'asc' | 'desc'>('desc');
 
   const toggleSort = (key: string) => {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -51,11 +58,13 @@ export default function CompAnalysis() {
   const fetchStockData = async (symbol: string) => {
     if (!symbol) return null;
     try {
-      const cacheKey = `finnhub_${symbol}_comp_data_v3`;
+      const cacheKey = `finnhub_${symbol}_comp_data_v4`;
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
-        const { timestamp, data } = JSON.parse(cached);
-        if (Date.now() - timestamp < 24 * 60 * 60 * 1000) return data;
+        try {
+          const { timestamp, data } = JSON.parse(cached);
+          if (Date.now() - timestamp < 24 * 60 * 60 * 1000) return data;
+        } catch { localStorage.removeItem(cacheKey); }
       }
 
       const [resFin, resProf, resMetric] = await Promise.all([
@@ -78,74 +87,74 @@ export default function CompAnalysis() {
           netIncome: number, niMargin: number, totalDebt: number, totalCash: number,
           totalEquity: number, fcf: number, histEvEbitda: any[];
 
-      const financials = finData.data && finData.data.length > 0 ? finData.data : null;
+      if (!finData.data || finData.data.length === 0) return null;
 
-      if (financials) {
-        // Full XBRL path for US-listed stocks
-        const findConcept = (section: any[], concepts: string[]) => {
-          if (!section) return 0;
-          for (const concept of concepts) {
-            const item = section.find((i: any) => i.concept === concept);
-            if (item) return parseFloat(item.value);
-          }
-          return 0;
-        };
+      const financials = finData.data;
+      const findConcept = (section: any[], concepts: string[]) => {
+        if (!section) return 0;
+        for (const concept of concepts) {
+          const item = section.find((i: any) => i.concept === concept);
+          if (item) return parseFloat(item.value);
+        }
+        return 0;
+      };
 
-        const latestReport = financials[0].report;
-        const prevReport = financials.length > 1 ? financials[1].report : null;
-        const ic = latestReport.ic; const bs = latestReport.bs; const cf = latestReport.cf;
+      const latestReport = financials[0].report;
+      const prevReport = financials.length > 1 ? financials[1].report : null;
+      const ic = latestReport.ic; const bs = latestReport.bs; const cf = latestReport.cf;
 
-        rev = findConcept(ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']);
-        const prevRev = prevReport ? findConcept(prevReport.ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']) : rev;
-        revGrowth = prevRev ? (rev - prevRev) / prevRev : 0;
+      rev = findConcept(ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']);
+      const prevRev = prevReport ? findConcept(prevReport.ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']) : rev;
+      revGrowth = prevRev ? (rev - prevRev) / prevRev : 0;
 
-        const ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
-        const da = findConcept(cf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
-        ebitda = ebit + da;
-        ebitdaMargin = rev ? ebitda / rev : 0;
-        netIncome = findConcept(ic, ['us-gaap_NetIncomeLoss', 'ifrs-full_ProfitLoss']);
-        niMargin = rev ? netIncome / rev : 0;
-
-        const shortTermDebt = findConcept(bs, ['us-gaap_LongTermDebtCurrent', 'us-gaap_ShortTermDebt', 'us-gaap_DebtCurrent', 'us-gaap_ShortTermBorrowings', 'ifrs-full_CurrentBorrowings']);
-        const longTermDebt = findConcept(bs, ['us-gaap_LongTermDebtNoncurrent', 'us-gaap_LongTermDebt', 'ifrs-full_NoncurrentBorrowings']);
-        totalDebt = shortTermDebt + longTermDebt;
-        totalCash = findConcept(bs, ['us-gaap_CashAndCashEquivalentsAtCarryingValue', 'us-gaap_CashAndCashEquivalentsAtCarryingValueIncludingVariableInterestEntities', 'ifrs-full_CashAndCashEquivalents']);
-        totalEquity = findConcept(bs, ['us-gaap_StockholdersEquity', 'us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest', 'ifrs-full_Equity']);
-
-        const cfo = findConcept(cf, ['us-gaap_NetCashProvidedByUsedInOperatingActivities', 'ifrs-full_CashFlowsFromUsedInOperatingActivities']);
-        const capex = Math.abs(findConcept(cf, ['us-gaap_PaymentsToAcquirePropertyPlantAndEquipment', 'ifrs-full_PurchaseOfPropertyPlantAndEquipment']));
-        fcf = cfo - capex;
-
-        histEvEbitda = financials.slice(0, 3).map((r: any) => {
-          const rIc = r.report?.ic ?? []; const rCf = r.report?.cf ?? [];
-          const rEbit = findConcept(rIc, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
-          const rDa = findConcept(rCf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
-          const rEbitda = rEbit + rDa;
-          return { year: r.endDate?.substring(0, 4) ?? String(r.year), evEbitda: rEbitda > 0 ? (marketCap + totalDebt - totalCash) / rEbitda : null };
-        }).reverse();
-      } else {
-        // Metric-based fallback for ADRs / non-US stocks
-        rev = (metrics.revenuePerShareTTM ?? 0) * sharesOut;
-        revGrowth = metrics.revenueGrowthTTMYoy ?? 0;
-        ebitdaMargin = metrics.ebitdaMarginTTM ?? 0;
-        ebitda = rev * ebitdaMargin;
-        niMargin = metrics.netMarginTTM ?? 0;
-        netIncome = rev * niMargin;
-        const pb = (metrics.pbAnnual ?? 0) > 0 ? metrics.pbAnnual : 1;
-        totalEquity = marketCap / pb;
-        totalDebt = totalEquity * (metrics.debtToEquityAnnual ?? metrics['totalDebt/totalEquityAnnual'] ?? 0);
-        totalCash = (metrics.cashPerSharePerShareAnnual ?? 0) * sharesOut;
-        const fcfMargin = metrics.freeCashFlowMarginAnnual ?? 0;
-        fcf = fcfMargin > 0 ? rev * fcfMargin : (metrics.freeCashFlowAnnual ?? 0) * 1e6;
-        // Build synthetic sparkline using revenue growth to back-calculate prior years
-        const growthRate = metrics.revenueGrowth3Y ?? revGrowth;
-        const ev0 = marketCap + totalDebt - totalCash;
-        histEvEbitda = [2, 1, 0].map(i => {
-          const pastRev = i > 0 ? rev / Math.pow(1 + growthRate, i) : rev;
-          const pastEbitda = pastRev * ebitdaMargin;
-          return { year: String(new Date().getFullYear() - i), evEbitda: pastEbitda > 0 ? ev0 / pastEbitda : null };
-        }).reverse();
+      let ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+      if (!ebit) {
+        const ebt = findConcept(ic, [
+          'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest',
+          'us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments',
+          'ifrs-full_ProfitLossBeforeTax',
+        ]);
+        const intExp = Math.abs(findConcept(ic, ['us-gaap_InterestExpense', 'us-gaap_InterestAndDebtExpense', 'ifrs-full_FinanceCosts']));
+        const intInc = Math.abs(findConcept(ic, ['us-gaap_InvestmentIncomeInterest', 'us-gaap_InterestAndDividendIncomeOperating', 'ifrs-full_FinanceIncome']));
+        if (ebt) ebit = ebt + intExp - intInc;
       }
+      // Fallback 2: Gross Profit − SG&A − R&D
+      if (!ebit && rev > 0) {
+        const gp2 = findConcept(ic, ['us-gaap_GrossProfit', 'ifrs-full_GrossProfit']) ||
+          (rev - findConcept(ic, ['us-gaap_CostOfRevenue', 'us-gaap_CostOfGoodsAndServicesSold', 'us-gaap_CostOfGoodsSold', 'us-gaap_CostOfServices']));
+        const sga = Math.abs(findConcept(ic, ['us-gaap_SellingGeneralAndAdministrativeExpense', 'us-gaap_SellingGeneralAndAdministrativeExpenses', 'us-gaap_GeneralAndAdministrativeExpense', 'ifrs-full_SellingGeneralAndAdministrativeExpense']));
+        const rd  = Math.abs(findConcept(ic, ['us-gaap_ResearchAndDevelopmentExpense', 'us-gaap_ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost']));
+        if (gp2 > 0 && sga > 0) ebit = gp2 - sga - rd;
+      }
+      const da = findConcept(cf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
+      ebitda = ebit + da;
+      ebitdaMargin = rev ? ebitda / rev : 0;
+      netIncome = findConcept(ic, ['us-gaap_NetIncomeLoss', 'ifrs-full_ProfitLoss']);
+      niMargin = rev ? netIncome / rev : 0;
+
+      const shortTermDebt = findConcept(bs, ['us-gaap_LongTermDebtCurrent', 'us-gaap_ShortTermDebt', 'us-gaap_DebtCurrent', 'us-gaap_ShortTermBorrowings', 'ifrs-full_CurrentBorrowings']);
+      const longTermDebt = findConcept(bs, ['us-gaap_LongTermDebtNoncurrent', 'us-gaap_LongTermDebt', 'ifrs-full_NoncurrentBorrowings']);
+      totalDebt = shortTermDebt + longTermDebt;
+      totalCash = findConcept(bs, ['us-gaap_CashAndCashEquivalentsAtCarryingValue', 'us-gaap_CashAndCashEquivalentsAtCarryingValueIncludingVariableInterestEntities', 'ifrs-full_CashAndCashEquivalents']);
+      totalEquity = findConcept(bs, ['us-gaap_StockholdersEquity', 'us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest', 'ifrs-full_Equity']);
+
+      const cfo = findConcept(cf, ['us-gaap_NetCashProvidedByUsedInOperatingActivities', 'ifrs-full_CashFlowsFromUsedInOperatingActivities']);
+      const capex = Math.abs(findConcept(cf, ['us-gaap_PaymentsToAcquirePropertyPlantAndEquipment', 'ifrs-full_PurchaseOfPropertyPlantAndEquipment']));
+      fcf = cfo - capex;
+
+      histEvEbitda = financials.slice(0, 3).map((r: any) => {
+        const rIc = r.report?.ic ?? []; const rCf = r.report?.cf ?? [];
+        let rEbit = findConcept(rIc, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+        if (!rEbit) {
+          const rEbt = findConcept(rIc, ['us-gaap_IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest', 'ifrs-full_ProfitLossBeforeTax']);
+          const rIntExp = Math.abs(findConcept(rIc, ['us-gaap_InterestExpense', 'us-gaap_InterestAndDebtExpense', 'ifrs-full_FinanceCosts']));
+          const rIntInc = Math.abs(findConcept(rIc, ['us-gaap_InvestmentIncomeInterest', 'ifrs-full_FinanceIncome']));
+          if (rEbt) rEbit = rEbt + rIntExp - rIntInc;
+        }
+        const rDa = findConcept(rCf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
+        const rEbitda = rEbit + rDa;
+        return { year: r.endDate?.substring(0, 4) ?? String(r.year), evEbitda: rEbitda > 0 ? (marketCap + totalDebt - totalCash) / rEbitda : null };
+      }).reverse();
 
       const ev = marketCap + totalDebt - totalCash;
       const price = sharesOut ? marketCap / sharesOut : 0;
@@ -162,61 +171,88 @@ export default function CompAnalysis() {
     } catch { return null; }
   };
 
-  const fetchData = async () => {
-    if (!ticker) return;
-    setLoading(true); setError('');
+  const fetchPeerSuggestions = async (sym: string) => {
+    setPeerFinderLoading(true);
+    setShowPeerFinder(true);
+    setPeerSuggestions([]);
     try {
-      const targetData = await fetchStockData(ticker);
-      if (!targetData) throw new Error(`Failed to fetch data for ${ticker}`);
+      const res = await fetch(`${BASE_URL}/stock/peers?symbol=${sym}&grouping=subindustry&token=${API_KEY}`);
+      if (!res.ok) return;
+      const list: string[] = await res.json();
+      const candidates = list.filter(p => p !== sym).slice(0, 10);
+      const profiles = await Promise.all(
+        candidates.map(p =>
+          fetch(`${BASE_URL}/stock/profile2?symbol=${p}&token=${API_KEY}`)
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null)
+        )
+      );
+      setPeerSuggestions(
+        candidates
+          .map((p, i) => ({ symbol: p, name: profiles[i]?.name ?? p, isUS: profiles[i]?.country === 'US' }))
+          .filter(s => s.name && s.name !== s.symbol) // skip empty profiles
+      );
+    } catch { /* silent */ } finally { setPeerFinderLoading(false); }
+  };
+
+  const togglePeerSelection = (sym: string) => {
+    setSelectedPeerSymbols(prev => {
+      if (prev.includes(sym)) return prev.filter(s => s !== sym);
+      if (prev.length >= 5) return prev;
+      return [...prev, sym];
+    });
+  };
+
+  const addCustomPeer = (e: React.FormEvent) => {
+    e.preventDefault();
+    const sym = customPeerInput.trim().toUpperCase();
+    if (!sym || selectedPeerSymbols.includes(sym) || sym === ticker || selectedPeerSymbols.length >= 5) return;
+    setSelectedPeerSymbols(prev => [...prev, sym]);
+    setCustomPeerInput('');
+  };
+
+  const removePeer = (sym: string) => setSelectedPeerSymbols(prev => prev.filter(s => s !== sym));
+
+  const fetchData = async () => {
+    const sym = tickerInput.trim().toUpperCase();
+    if (!sym) return;
+    setLoading(true);
+    setError('');
+    const confirmedTicker = sym;
+    setTicker(confirmedTicker);
+    try {
+      const targetData = await fetchStockData(confirmedTicker);
+      if (!targetData) throw new Error(`No financial data found for ${confirmedTicker}. Only US-listed stocks with SEC filings (NYSE / NASDAQ) are supported.`);
 
       const initialSelected: Record<string, boolean> = {};
-      const validPeers = [];
-
-      for (const peer of customPeers) {
-        if (peer === ticker) continue;
-        const peerData = await fetchStockData(peer);
-        if (peerData) { validPeers.push(peerData); initialSelected[peer] = true; }
+      const peerResults = [];
+      for (const peer of selectedPeerSymbols) {
+        if (peer === confirmedTicker) continue;
+        const d = await fetchStockData(peer);
+        if (d) { peerResults.push(d); initialSelected[peer] = true; }
       }
 
-      if (validPeers.length < numPeers) {
-        const resPeers = await fetch(`${BASE_URL}/stock/peers?symbol=${ticker}&grouping=subindustry&token=${API_KEY}`);
-        const peersList = await resPeers.json();
-        if (Array.isArray(peersList)) {
-          for (const peer of peersList) {
-            if (peer === ticker || customPeers.includes(peer) || validPeers.some((p: any) => p.symbol === peer)) continue;
-            if (validPeers.length >= numPeers) break;
-            const peerData = await fetchStockData(peer);
-            if (peerData) { validPeers.push(peerData); initialSelected[peer] = true; }
-          }
-        }
-      }
-
-      setData([targetData, ...validPeers]);
+      setData([targetData, ...peerResults]);
       setSelectedPeers(initialSelected);
     } catch (err: any) {
       setError(err.message || 'An error occurred');
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchData(); }, [ticker, numPeers, customPeers]);
-
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (tickerInput.trim()) setTicker(tickerInput.trim().toUpperCase());
+    const sym = tickerInput.trim().toUpperCase();
+    if (!sym) return;
+    // Reset peer state when ticker changes
+    setTicker(sym);
+    setShowPeerFinder(false);
+    setPeerSuggestions([]);
+    setSelectedPeerSymbols([]);
+    setData([]);
+    setError('');
   };
 
   const togglePeer = (symbol: string) => setSelectedPeers(prev => ({ ...prev, [symbol]: !prev[symbol] }));
-
-  const handleAddCustomPeer = (e: React.FormEvent) => {
-    e.preventDefault();
-    const newPeer = customPeersInput.trim().toUpperCase();
-    if (newPeer && !customPeers.includes(newPeer) && customPeers.length < 5) {
-      setCustomPeers(prev => [...prev, newPeer]);
-      setCustomPeersInput('');
-    }
-  };
-
-  const removeCustomPeer = (symbol: string) => setCustomPeers(prev => prev.filter(p => p !== symbol));
 
   const calcStats = (key: string) => {
     const values = data.slice(1).filter(d => selectedPeers[d.symbol]).map(d => d[key]).filter((v: any) => v != null && !isNaN(v) && v > 0).sort((a: number, b: number) => a - b);
@@ -398,63 +434,141 @@ export default function CompAnalysis() {
 
   return (
     <div className="space-y-6">
-      {/* Controls */}
-      <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-end">
-          <form onSubmit={handleSearch} className="flex flex-col gap-2">
-            <label className="block text-sm font-medium text-slate-400">Target Ticker</label>
+      {/* ── Controls ──────────────────────────────────────────────────────── */}
+      <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 space-y-5">
+
+        {/* Row 1: ticker input + action buttons */}
+        <form onSubmit={handleSearch} className="flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1.5 flex-1 min-w-[180px] max-w-xs">
+            <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">Target Ticker</label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search className="h-5 w-5 text-slate-500" />
-              </div>
-              <input type="text" value={tickerInput} onChange={(e) => setTickerInput(e.target.value)}
-                className="block w-full pl-10 pr-3 py-2 border border-slate-600 rounded-lg leading-5 bg-slate-900 text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm uppercase"
-                placeholder="e.g. AAPL" />
-            </div>
-          </form>
-
-          <form onSubmit={handleAddCustomPeer} className="flex flex-col gap-2">
-            <label className="block text-sm font-medium text-slate-400">Add Custom Peer (Max 5)</label>
-            <div className="flex gap-2">
-              <input type="text" value={customPeersInput} onChange={(e) => setCustomPeersInput(e.target.value)}
-                className="block flex-1 px-3 py-2 border border-slate-600 rounded-lg leading-5 bg-slate-900 text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm uppercase"
-                placeholder="e.g. MSFT" />
-              <button type="submit" disabled={customPeers.length >= 5} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50">Add</button>
-            </div>
-          </form>
-
-          <div className="flex flex-col gap-2">
-            <label className="block text-sm font-medium text-slate-400">Auto-Peers Count</label>
-            <div className="flex gap-4 items-center">
-              <input type="number" min="0" max="10" value={numPeers}
-                onChange={(e) => setNumPeers(Math.min(10, Math.max(0, parseInt(e.target.value) || 0)))}
-                className="block w-24 px-3 py-2 border border-slate-600 rounded-lg leading-5 bg-slate-900 text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm" />
-              <button
-                onClick={() => { const sym = tickerInput.trim().toUpperCase(); if (sym) setTicker(sym); }}
-                disabled={loading || !tickerInput.trim()}
-                className="flex-1 px-6 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {loading ? 'Loading...' : 'Run Analysis'}
-              </button>
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 pointer-events-none" />
+              <input
+                type="text"
+                value={tickerInput}
+                onChange={e => setTickerInput(e.target.value)}
+                placeholder="e.g. AAPL"
+                className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-600 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 uppercase"
+              />
             </div>
           </div>
-        </div>
 
-        {customPeers.length > 0 && (
-          <div className="mt-4 flex flex-wrap gap-2">
-            <span className="text-xs text-slate-500 self-center mr-2 uppercase font-semibold">Custom:</span>
-            {customPeers.map(p => (
-              <span key={p} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-700 text-slate-200 border border-slate-600">
-                {p}
-                <button onClick={() => removeCustomPeer(p)} className="ml-1.5 text-slate-400 hover:text-red-400">
-                  <AlertCircle className="w-3 h-3" />
+          <button
+            type="button"
+            disabled={!tickerInput.trim() || peerFinderLoading}
+            onClick={() => fetchPeerSuggestions(tickerInput.trim().toUpperCase())}
+            className="flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-200 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Users className="w-4 h-4" />
+            {peerFinderLoading ? 'Finding…' : 'Peer Finder'}
+          </button>
+
+          <button
+            type="button"
+            disabled={loading || !tickerInput.trim()}
+            onClick={fetchData}
+            className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {loading ? 'Loading…' : 'Run Analysis'}
+          </button>
+        </form>
+
+        {/* Row 2: Peer Finder suggestions panel */}
+        {showPeerFinder && (
+          <div className="border border-slate-700/60 rounded-xl p-4 space-y-3 bg-slate-900/40">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+                <Users className="w-4 h-4 text-slate-400" />
+                Suggested Peers
+                <span className="text-xs text-slate-500 font-normal">— click to add (max 5)</span>
+              </p>
+              <span className="text-xs text-slate-500">{selectedPeerSymbols.length}/5 selected</span>
+            </div>
+
+            {peerFinderLoading ? (
+              <div className="flex items-center gap-2 text-sm text-slate-400 py-2">
+                <div className="w-4 h-4 border border-slate-500 border-t-transparent rounded-full animate-spin" />
+                Fetching peer list…
+              </div>
+            ) : peerSuggestions.length === 0 ? (
+              <p className="text-xs text-slate-500 py-1">No peer suggestions found for this ticker.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {peerSuggestions.map(p => {
+                  const isSelected = selectedPeerSymbols.includes(p.symbol);
+                  const isFull = selectedPeerSymbols.length >= 5 && !isSelected;
+                  return (
+                    <button
+                      key={p.symbol}
+                      disabled={isFull}
+                      onClick={() => togglePeerSelection(p.symbol)}
+                      title={isFull ? 'Maximum 5 peers selected' : undefined}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
+                        isSelected
+                          ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                          : isFull
+                          ? 'bg-slate-800/40 border-slate-700/30 text-slate-600 cursor-not-allowed'
+                          : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100'
+                      }`}
+                    >
+                      <span className="font-bold">{p.symbol}</span>
+                      <span className="text-slate-400 max-w-[100px] truncate">{p.name}</span>
+                      <span className={`ml-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                        p.isUS ? 'bg-blue-500/15 text-blue-300' : 'bg-amber-500/15 text-amber-300'
+                      }`}>
+                        {p.isUS ? 'US' : 'Non-US'}
+                      </span>
+                      {isSelected && <X className="w-3 h-3 text-emerald-400 shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Manual custom peer input */}
+            <form onSubmit={addCustomPeer} className="flex gap-2 pt-1 border-t border-slate-700/40">
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0">
+                <Plus className="w-3.5 h-3.5" />
+                Add manually:
+              </div>
+              <input
+                type="text"
+                value={customPeerInput}
+                onChange={e => setCustomPeerInput(e.target.value)}
+                placeholder="e.g. TSLA"
+                className="flex-1 max-w-[120px] px-2.5 py-1 bg-slate-800 border border-slate-600 rounded-md text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 uppercase"
+              />
+              <button
+                type="submit"
+                disabled={selectedPeerSymbols.length >= 5 || !customPeerInput.trim()}
+                className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-md text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Add
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* Row 3: Selected peers tags (always visible if any selected) */}
+        {selectedPeerSymbols.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-500 uppercase font-semibold tracking-wide">Peers selected:</span>
+            {selectedPeerSymbols.map(sym => (
+              <span key={sym} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-700 text-slate-200 border border-slate-600">
+                {sym}
+                <button onClick={() => removePeer(sym)} className="text-slate-400 hover:text-red-400 transition-colors">
+                  <X className="w-3 h-3" />
                 </button>
               </span>
             ))}
+            <button onClick={() => setSelectedPeerSymbols([])} className="text-xs text-slate-500 hover:text-red-400 transition-colors ml-1">
+              Clear all
+            </button>
           </div>
         )}
       </div>
 
+      {/* ── About hint (shown before any analysis runs) ──────────────────── */}
       {data.length === 0 && !loading && !error && (
         <div className="bg-slate-800/30 border border-slate-700/30 rounded-xl p-5 space-y-3">
           <div className="flex items-center gap-2 mb-1">
@@ -462,16 +576,16 @@ export default function CompAnalysis() {
             <span className="text-sm font-semibold text-slate-300">About Comparable Company Analysis</span>
           </div>
           <p className="text-xs text-slate-500 leading-relaxed">
-            Benchmark your target company against its industry peers using key valuation multiples — EV/Revenue, EV/EBITDA, P/E, P/Sales, P/Book, and P/FCF. Peer data is sourced automatically from Finnhub or you can add custom tickers manually.
+            Benchmark your target company against up to 5 peers using EV/Revenue, EV/EBITDA, P/E, P/Sales, P/Book, and P/FCF. Only US-listed stocks with SEC filings are supported.
           </p>
           <ol className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
             {[
-              'Enter the target company ticker and click Run Analysis to fetch data.',
-              'Finnhub auto-suggests industry peers; add up to 5 custom tickers using the Add Peer field.',
-              'Use the Auto-Peers count slider to control how many Finnhub peers are included.',
+              'Enter a ticker and click Run Analysis to load the target stock alone.',
+              'Click Peer Finder to see Finnhub\'s suggested industry peers — each is labeled US or Non-US.',
+              'Select up to 5 peers to add. Non-US peers may have missing data.',
+              'Or type any ticker manually in the "Add manually" field inside the Peer Finder panel.',
               'Click any column header to sort the comparison table ascending or descending.',
-              'The football-field chart shows the implied price range across 6 valuation methods using peer medians.',
-              'The bubble chart plots each company by EV/EBITDA vs Revenue Growth, sized by market cap.',
+              'The football-field chart shows the implied price range using peer medians across 6 valuation methods.',
             ].map((step, i) => (
               <li key={i} className="flex items-start gap-2.5 text-xs text-slate-400">
                 <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-xs text-blue-400 font-semibold">{i + 1}</span>
@@ -485,7 +599,11 @@ export default function CompAnalysis() {
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-6 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-          <div><h3 className="text-red-500 font-medium">Error loading data</h3><p className="text-red-400/80 text-sm mt-1">{error}</p></div>
+          <div>
+            <h3 className="text-red-500 font-medium">Error loading data</h3>
+            <p className="text-red-400/80 text-sm mt-1">{error}</p>
+            <p className="text-slate-500 text-xs mt-2">If this keeps happening, click <span className="text-slate-300 font-medium">Clear Cache</span> in the top-right corner and try again.</p>
+          </div>
         </div>
       )}
 
