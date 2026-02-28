@@ -14,6 +14,80 @@ const parseNum = (val: any): number => {
   return isNaN(parsed) ? 0 : parsed;
 };
 
+function safeSetItem(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+      Object.keys(localStorage)
+        .filter(k => k.startsWith('finnhub_') || k.startsWith('valuwise_'))
+        .forEach(k => localStorage.removeItem(k));
+      try { localStorage.setItem(key, value); } catch { /* skip if still full */ }
+    }
+  }
+}
+
+function buildSyntheticFinancials(metrics: any, profile: any): any[] {
+  const sharesOut = (parseFloat(profile.shareOutstanding) || 0) * 1e6;
+  if (!sharesOut || !metrics.revenuePerShareTTM) return [];
+
+  const rev = metrics.revenuePerShareTTM * sharesOut;
+  const ebitdaMargin = metrics.ebitdaMarginTTM ?? 0;
+  const netMargin = metrics.netMarginTTM ?? 0;
+  const grossMargin = metrics.grossMarginTTM ?? 0;
+  const operatingMargin = metrics.operatingMarginTTM ?? (ebitdaMargin * 0.85);
+  const ebit = rev * operatingMargin;
+  const da = Math.max(0, rev * ebitdaMargin - ebit);
+  const netIncome = rev * netMargin;
+  const gp = rev * grossMargin;
+  const tax = Math.max(0, ebit - netIncome);
+  const eps = sharesOut > 0 ? netIncome / sharesOut : (metrics.epsTTM ?? 0);
+
+  const fcfMargin = metrics.freeCashFlowMarginAnnual ?? 0;
+  const fcf = fcfMargin > 0 ? rev * fcfMargin : (metrics.freeCashFlowAnnual ?? 0) * 1e6;
+  const cfo = netIncome + da;
+  const capex = Math.max(0, cfo - fcf);
+
+  const marketCap = (parseFloat(profile.marketCapitalization) || metrics.marketCapitalization || 0) * 1e6;
+  const pb = (metrics.pbAnnual ?? 0) > 0 ? metrics.pbAnnual : 1;
+  const totalEquity = marketCap / pb;
+  const deRatio = metrics.debtToEquityAnnual ?? metrics['totalDebt/totalEquityAnnual'] ?? 0;
+  const totalDebt = totalEquity * deRatio;
+  const cash = (metrics.cashPerSharePerShareAnnual ?? 0) * sharesOut;
+
+  const interestCoverage = metrics.netInterestCoverageAnnual ?? 0;
+  const interestExpense = (interestCoverage > 0 && ebit > 0) ? Math.abs(ebit / interestCoverage) : 0;
+  const yearStr = `${new Date().getFullYear()}-12`;
+
+  return [{
+    endDate: yearStr,
+    year: new Date().getFullYear(),
+    report: {
+      ic: [
+        { concept: 'us-gaap_Revenues', value: rev },
+        { concept: 'us-gaap_GrossProfit', value: gp },
+        { concept: 'us-gaap_OperatingIncomeLoss', value: ebit },
+        { concept: 'us-gaap_NetIncomeLoss', value: netIncome },
+        { concept: 'us-gaap_IncomeTaxExpenseBenefit', value: tax },
+        { concept: 'us-gaap_EarningsPerShareBasic', value: eps },
+        { concept: 'us-gaap_WeightedAverageNumberOfSharesOutstandingBasic', value: sharesOut },
+        { concept: 'us-gaap_InterestExpense', value: interestExpense },
+      ],
+      bs: [
+        { concept: 'us-gaap_StockholdersEquity', value: totalEquity },
+        { concept: 'us-gaap_LongTermDebtNoncurrent', value: totalDebt },
+        { concept: 'us-gaap_CashAndCashEquivalentsAtCarryingValue', value: cash },
+        { concept: 'us-gaap_CommonStockSharesOutstanding', value: sharesOut },
+      ],
+      cf: [
+        { concept: 'us-gaap_DepreciationDepletionAndAmortization', value: da },
+        { concept: 'us-gaap_NetCashProvidedByUsedInOperatingActivities', value: cfo },
+        { concept: 'us-gaap_PaymentsToAcquirePropertyPlantAndEquipment', value: capex },
+      ],
+    },
+  }];
+}
+
 const formatCurrency = (val: number) => {
   const isNegative = val < 0;
   const absVal = Math.abs(val);
@@ -96,31 +170,41 @@ export default function App() {
       }
 
       if (!fetchedData) {
-        // Fetch Financials
-        const resFin = await fetch(`${BASE_URL}/stock/financials-reported?symbol=${symbol}&freq=annual&token=${API_KEY}`);
-        const finData = await resFin.json();
-
-        // Fetch Profile for Beta, Market Cap, Shares Outstanding
-        const resProf = await fetch(`${BASE_URL}/stock/profile2?symbol=${symbol}&token=${API_KEY}`);
-        const profData = await resProf.json();
-
-        // Fetch Basic Financials for Beta (if not in profile)
-        const resMetric = await fetch(`${BASE_URL}/stock/metric?symbol=${symbol}&metric=all&token=${API_KEY}`);
-        const metricData = await resMetric.json();
+        const [resFin, resProf, resMetric] = await Promise.all([
+          fetch(`${BASE_URL}/stock/financials-reported?symbol=${symbol}&freq=annual&token=${API_KEY}`),
+          fetch(`${BASE_URL}/stock/profile2?symbol=${symbol}&token=${API_KEY}`),
+          fetch(`${BASE_URL}/stock/metric?symbol=${symbol}&metric=all&token=${API_KEY}`),
+        ]);
+        const [finData, profData, metricData] = await Promise.all([
+          resFin.json(), resProf.json(), resMetric.json(),
+        ]);
 
         if (finData.error || profData.error || metricData.error) {
           throw new Error(finData.error || profData.error || metricData.error);
         }
 
+        let financials = (finData.data || []).slice(0, 6);
+        let isMetricBased = false;
+
+        if (financials.length === 0 && metricData.metric && profData.shareOutstanding) {
+          financials = buildSyntheticFinancials(metricData.metric, profData);
+          isMetricBased = true;
+        }
+
+        if (financials.length === 0) {
+          throw new Error('No financial data found for this ticker.');
+        }
+
         fetchedData = {
-          financials: finData.data,
+          financials,
           profile: profData,
-          metrics: metricData.metric
+          metrics: metricData.metric,
+          isMetricBased,
         };
 
-        localStorage.setItem(cacheKey, JSON.stringify({
+        safeSetItem(cacheKey, JSON.stringify({
           timestamp: Date.now(),
-          data: fetchedData
+          data: fetchedData,
         }));
       }
 
@@ -802,9 +886,9 @@ export default function App() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
               </svg>
               <div>
-                <p className="text-sm font-medium text-amber-400 mb-0.5">US-Listed Stocks Only</p>
+                <p className="text-sm font-medium text-amber-400 mb-0.5">ADR & Non-US Stock Support</p>
                 <p className="text-sm text-slate-400 leading-relaxed">
-                  ValuWise currently only supports stocks listed on US exchanges (NYSE, NASDAQ). Foreign-listed companies such as <span className="text-slate-300">NVO</span> (Novo Nordisk), <span className="text-slate-300">TSM</span> (TSMC), or other ADRs and international tickers may return incomplete or no data.
+                  US-listed stocks (NYSE, NASDAQ) use full reported XBRL financials. ADRs and foreign-listed companies such as <span className="text-slate-300">NVO</span> (Novo Nordisk) and <span className="text-slate-300">TSM</span> (TSMC) are supported via Finnhub's aggregated TTM metrics — one data point is shown and all assumptions can be adjusted with the sliders.
                 </p>
               </div>
             </div>
@@ -875,6 +959,19 @@ export default function App() {
           </div>
         ) : dcf && data ? (
           <div className="space-y-6">
+            {data?.isMetricBased && (
+              <div className="flex items-start gap-3 bg-amber-500/5 border border-amber-500/20 rounded-xl px-5 py-4">
+                <svg className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                </svg>
+                <div>
+                  <p className="text-sm font-medium text-amber-400 mb-0.5">ADR / Non-US Stock — Estimated Data</p>
+                  <p className="text-sm text-slate-400 leading-relaxed">
+                    This ticker does not file with the SEC. The model is seeded using Finnhub's aggregated TTM metrics (revenue per share, margins, FCF) rather than reported XBRL financials. Historical trend charts show one data point. Use the sliders to adjust all assumptions.
+                  </p>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               
               {/* Left Column: Controls & Assumptions */}

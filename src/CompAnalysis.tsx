@@ -6,6 +6,19 @@ import * as XLSX from 'xlsx';
 const API_KEY = 'ctj1dchr01qgfbsvp4mgctj1dchr01qgfbsvp4n0';
 const BASE_URL = 'https://finnhub.io/api/v1';
 
+function safeSetItem(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+      Object.keys(localStorage)
+        .filter(k => k.startsWith('finnhub_') || k.startsWith('valuwise_'))
+        .forEach(k => localStorage.removeItem(k));
+      try { localStorage.setItem(key, value); } catch { /* skip if still full */ }
+    }
+  }
+}
+
 const formatCurrency = (val: number) => {
   const isNegative = val < 0;
   const absVal = Math.abs(val);
@@ -45,59 +58,97 @@ export default function CompAnalysis() {
         if (Date.now() - timestamp < 24 * 60 * 60 * 1000) return data;
       }
 
-      const resFin = await fetch(`${BASE_URL}/stock/financials-reported?symbol=${symbol}&freq=annual&token=${API_KEY}`);
-      const finData = await resFin.json();
-      const resProf = await fetch(`${BASE_URL}/stock/profile2?symbol=${symbol}&token=${API_KEY}`);
-      const profData = await resProf.json();
-      const resMetric = await fetch(`${BASE_URL}/stock/metric?symbol=${symbol}&metric=all&token=${API_KEY}`);
-      const metricData = await resMetric.json();
+      const [resFin, resProf, resMetric] = await Promise.all([
+        fetch(`${BASE_URL}/stock/financials-reported?symbol=${symbol}&freq=annual&token=${API_KEY}`),
+        fetch(`${BASE_URL}/stock/profile2?symbol=${symbol}&token=${API_KEY}`),
+        fetch(`${BASE_URL}/stock/metric?symbol=${symbol}&metric=all&token=${API_KEY}`),
+      ]);
+      const [finData, profData, metricData] = await Promise.all([
+        resFin.json(), resProf.json(), resMetric.json(),
+      ]);
 
-      if (!finData.data || finData.data.length === 0 || !profData.ticker || !metricData.metric) return null;
+      if (!profData.ticker || !metricData.metric) return null;
 
-      const financials = finData.data;
       const profile = profData;
       const metrics = metricData.metric;
-
-      const findConcept = (section: any[], concepts: string[]) => {
-        if (!section) return 0;
-        for (const concept of concepts) {
-          const item = section.find((i: any) => i.concept === concept);
-          if (item) return parseFloat(item.value);
-        }
-        return 0;
-      };
-
-      const latestReport = financials[0].report;
-      const prevReport = financials.length > 1 ? financials[1].report : null;
-      const ic = latestReport.ic; const bs = latestReport.bs; const cf = latestReport.cf;
-
-      const rev = findConcept(ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']);
-      const prevRev = prevReport ? findConcept(prevReport.ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']) : rev;
-      const revGrowth = prevRev ? (rev - prevRev) / prevRev : 0;
-
-      const ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
-      const da = findConcept(cf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
-      const ebitda = ebit + da;
-      const ebitdaMargin = rev ? ebitda / rev : 0;
-      const netIncome = findConcept(ic, ['us-gaap_NetIncomeLoss', 'ifrs-full_ProfitLoss']);
-      const niMargin = rev ? netIncome / rev : 0;
-
-      const shortTermDebt = findConcept(bs, ['us-gaap_LongTermDebtCurrent', 'us-gaap_ShortTermDebt', 'us-gaap_DebtCurrent', 'us-gaap_ShortTermBorrowings', 'ifrs-full_CurrentBorrowings']);
-      const longTermDebt = findConcept(bs, ['us-gaap_LongTermDebtNoncurrent', 'us-gaap_LongTermDebt', 'ifrs-full_NoncurrentBorrowings']);
-      const totalDebt = shortTermDebt + longTermDebt;
-      const totalCash = findConcept(bs, ['us-gaap_CashAndCashEquivalentsAtCarryingValue', 'us-gaap_CashAndCashEquivalentsAtCarryingValueIncludingVariableInterestEntities', 'ifrs-full_CashAndCashEquivalents']);
-      const totalEquity = findConcept(bs, ['us-gaap_StockholdersEquity', 'us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest', 'ifrs-full_Equity']);
-
       const marketCap = (parseFloat(profile.marketCapitalization) || parseFloat(metrics.marketCapitalization) || 0) * 1e6;
+      const sharesOut = (parseFloat(profile.shareOutstanding) * 1e6) || 0;
+
+      let rev: number, revGrowth: number, ebitda: number, ebitdaMargin: number,
+          netIncome: number, niMargin: number, totalDebt: number, totalCash: number,
+          totalEquity: number, fcf: number, histEvEbitda: any[];
+
+      const financials = finData.data && finData.data.length > 0 ? finData.data : null;
+
+      if (financials) {
+        // Full XBRL path for US-listed stocks
+        const findConcept = (section: any[], concepts: string[]) => {
+          if (!section) return 0;
+          for (const concept of concepts) {
+            const item = section.find((i: any) => i.concept === concept);
+            if (item) return parseFloat(item.value);
+          }
+          return 0;
+        };
+
+        const latestReport = financials[0].report;
+        const prevReport = financials.length > 1 ? financials[1].report : null;
+        const ic = latestReport.ic; const bs = latestReport.bs; const cf = latestReport.cf;
+
+        rev = findConcept(ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']);
+        const prevRev = prevReport ? findConcept(prevReport.ic, ['us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax', 'us-gaap_SalesRevenueNet', 'us-gaap_Revenues', 'ifrs-full_Revenue']) : rev;
+        revGrowth = prevRev ? (rev - prevRev) / prevRev : 0;
+
+        const ebit = findConcept(ic, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+        const da = findConcept(cf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
+        ebitda = ebit + da;
+        ebitdaMargin = rev ? ebitda / rev : 0;
+        netIncome = findConcept(ic, ['us-gaap_NetIncomeLoss', 'ifrs-full_ProfitLoss']);
+        niMargin = rev ? netIncome / rev : 0;
+
+        const shortTermDebt = findConcept(bs, ['us-gaap_LongTermDebtCurrent', 'us-gaap_ShortTermDebt', 'us-gaap_DebtCurrent', 'us-gaap_ShortTermBorrowings', 'ifrs-full_CurrentBorrowings']);
+        const longTermDebt = findConcept(bs, ['us-gaap_LongTermDebtNoncurrent', 'us-gaap_LongTermDebt', 'ifrs-full_NoncurrentBorrowings']);
+        totalDebt = shortTermDebt + longTermDebt;
+        totalCash = findConcept(bs, ['us-gaap_CashAndCashEquivalentsAtCarryingValue', 'us-gaap_CashAndCashEquivalentsAtCarryingValueIncludingVariableInterestEntities', 'ifrs-full_CashAndCashEquivalents']);
+        totalEquity = findConcept(bs, ['us-gaap_StockholdersEquity', 'us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest', 'ifrs-full_Equity']);
+
+        const cfo = findConcept(cf, ['us-gaap_NetCashProvidedByUsedInOperatingActivities', 'ifrs-full_CashFlowsFromUsedInOperatingActivities']);
+        const capex = Math.abs(findConcept(cf, ['us-gaap_PaymentsToAcquirePropertyPlantAndEquipment', 'ifrs-full_PurchaseOfPropertyPlantAndEquipment']));
+        fcf = cfo - capex;
+
+        histEvEbitda = financials.slice(0, 3).map((r: any) => {
+          const rIc = r.report?.ic ?? []; const rCf = r.report?.cf ?? [];
+          const rEbit = findConcept(rIc, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
+          const rDa = findConcept(rCf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
+          const rEbitda = rEbit + rDa;
+          return { year: r.endDate?.substring(0, 4) ?? String(r.year), evEbitda: rEbitda > 0 ? (marketCap + totalDebt - totalCash) / rEbitda : null };
+        }).reverse();
+      } else {
+        // Metric-based fallback for ADRs / non-US stocks
+        rev = (metrics.revenuePerShareTTM ?? 0) * sharesOut;
+        revGrowth = metrics.revenueGrowthTTMYoy ?? 0;
+        ebitdaMargin = metrics.ebitdaMarginTTM ?? 0;
+        ebitda = rev * ebitdaMargin;
+        niMargin = metrics.netMarginTTM ?? 0;
+        netIncome = rev * niMargin;
+        const pb = (metrics.pbAnnual ?? 0) > 0 ? metrics.pbAnnual : 1;
+        totalEquity = marketCap / pb;
+        totalDebt = totalEquity * (metrics.debtToEquityAnnual ?? metrics['totalDebt/totalEquityAnnual'] ?? 0);
+        totalCash = (metrics.cashPerSharePerShareAnnual ?? 0) * sharesOut;
+        const fcfMargin = metrics.freeCashFlowMarginAnnual ?? 0;
+        fcf = fcfMargin > 0 ? rev * fcfMargin : (metrics.freeCashFlowAnnual ?? 0) * 1e6;
+        // Build synthetic sparkline using revenue growth to back-calculate prior years
+        const growthRate = metrics.revenueGrowth3Y ?? revGrowth;
+        const ev0 = marketCap + totalDebt - totalCash;
+        histEvEbitda = [2, 1, 0].map(i => {
+          const pastRev = i > 0 ? rev / Math.pow(1 + growthRate, i) : rev;
+          const pastEbitda = pastRev * ebitdaMargin;
+          return { year: String(new Date().getFullYear() - i), evEbitda: pastEbitda > 0 ? ev0 / pastEbitda : null };
+        }).reverse();
+      }
+
       const ev = marketCap + totalDebt - totalCash;
-
-      const sharesOut = (parseFloat(profile.shareOutstanding) * 1e6) || findConcept(bs, ['us-gaap_CommonStockSharesOutstanding', 'us-gaap_WeightedAverageNumberOfSharesOutstandingBasic', 'ifrs-full_WeightedAverageShares']);
       const price = sharesOut ? marketCap / sharesOut : 0;
-
-      const cfo = findConcept(cf, ['us-gaap_NetCashProvidedByUsedInOperatingActivities', 'ifrs-full_CashFlowsFromUsedInOperatingActivities']);
-      const capex = Math.abs(findConcept(cf, ['us-gaap_PaymentsToAcquirePropertyPlantAndEquipment', 'ifrs-full_PurchaseOfPropertyPlantAndEquipment']));
-      const fcf = cfo - capex;
-
       const evToRev = rev ? ev / rev : 0;
       const evToEbitda = ebitda ? ev / ebitda : 0;
       const pToSales = rev ? marketCap / rev : 0;
@@ -105,17 +156,8 @@ export default function CompAnalysis() {
       const pToBook = totalEquity > 0 ? marketCap / totalEquity : 0;
       const pToFCF = fcf > 0 ? marketCap / fcf : 0;
 
-      // Historical EV/EBITDA sparkline
-      const histEvEbitda = financials.slice(0, 3).map((r: any) => {
-        const rIc = r.report?.ic ?? []; const rCf = r.report?.cf ?? [];
-        const rEbit = findConcept(rIc, ['us-gaap_OperatingIncomeLoss', 'ifrs-full_ProfitLossFromOperatingActivities']);
-        const rDa = findConcept(rCf, ['us-gaap_DepreciationDepletionAndAmortization', 'us-gaap_DepreciationAmortizationAndAccretionNet', 'ifrs-full_DepreciationAndAmortisationExpense']);
-        const rEbitda = rEbit + rDa;
-        return { year: r.endDate?.substring(0, 4) ?? String(r.year), evEbitda: rEbitda > 0 ? ev / rEbitda : null };
-      }).reverse();
-
       const result = { symbol: profile.ticker, name: profile.name, rev, revGrowth, ebitda, ebitdaMargin, netIncome, niMargin, price, marketCap, ev, evToRev, evToEbitda, pToSales, pToE, pToBook, pToFCF, totalDebt, totalCash, totalEquity, sharesOut, fcf, histEvEbitda };
-      localStorage.setItem(cacheKey, JSON.stringify({ timestamp: Date.now(), data: result }));
+      safeSetItem(cacheKey, JSON.stringify({ timestamp: Date.now(), data: result }));
       return result;
     } catch { return null; }
   };
